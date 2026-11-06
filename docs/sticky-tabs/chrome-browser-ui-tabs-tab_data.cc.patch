@@ -1,0 +1,58 @@
+diff --git a/chrome/browser/ui/tabs/tab_data.cc b/chrome/browser/ui/tabs/tab_data.cc
+index fd524a958c..4a7ea8848d 100644
+--- a/chrome/browser/ui/tabs/tab_data.cc
++++ b/chrome/browser/ui/tabs/tab_data.cc
+@@ -17,6 +17,7 @@
+ #include "chrome/browser/ui/tabs/public/tab_features.h"
+ #include "chrome/browser/ui/tabs/saved_tab_groups/collaboration_messaging_tab_data.h"
+ #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
++#include "chrome/browser/ui/tabs/sticky_tab_controller.h"  // STICKY_TABS
+ #include "chrome/browser/ui/tabs/tab_change_type.h"
+ #include "chrome/browser/ui/thumbnails/thumbnail_image.h"
+ #include "chrome/browser/ui/thumbnails/thumbnail_tab_helper.h"
+@@ -28,6 +29,8 @@
+ namespace tabs {
+ 
+ TabData TabData::FromTabInterface(tabs::TabInterface* tab_interface) {
++  TabData tab_data = [&]() -> TabData {
++  if (auto tab_data = MaybeGetSharedPinnedTabData(tab_interface)) return *tab_data;
+   TabUIHelper* const tab_ui_helper = TabUIHelper::From(tab_interface);
+   tabs::TabAlertController* const tab_alert_controller =
+       tabs::TabAlertController::From(tab_interface);
+@@ -57,6 +60,17 @@ TabData TabData::FromTabInterface(tabs::TabInterface* tab_interface) {
+   tab_data.pinned = tab_interface->IsPinned();
+   tab_data.blocked = tab_interface->IsBlocked();
+ 
++  // STICKY_TABS: fixed title and favicon dot state.
++  if (StickyTabController* sticky = StickyTabController::From(tab_interface);
++      sticky && sticky->is_sticky()) {
++    if (!sticky->title().empty()) {
++      tab_data.title = sticky->title();
++    }
++    tab_data.sticky_state = sticky->has_left_home()
++                                ? TabData::StickyState::kLeftHome
++                                : TabData::StickyState::kHome;
++  }
++
+   ThumbnailTabHelper* const thumbnail_tab_helper =
+       ThumbnailTabHelper::From(tab_interface);
+   tab_data.thumbnail =
+@@ -72,6 +86,8 @@ TabData TabData::FromTabInterface(tabs::TabInterface* tab_interface) {
+       collaboration_messaging ? collaboration_messaging->GetWeakPtr() : nullptr;
+ 
+   return tab_data;
++  }();
++  return MaybeApplyBraveTabDataOverrides(tab_interface, std::move(tab_data));
+ }
+ 
+ TabData::TabData() = default;
+@@ -99,7 +115,8 @@ bool TabData::operator==(const TabData& other) const {
+          is_tab_discarded == other.is_tab_discarded &&
+          last_committed_url == other.last_committed_url &&
+          alert_state == other.alert_state && pinned == other.pinned &&
+-         blocked == other.blocked && thumbnail == other.thumbnail &&
++         blocked == other.blocked && sticky_state == other.sticky_state &&
++         thumbnail == other.thumbnail &&
+          tab_resource_usage == other.tab_resource_usage;
+ }
+ 

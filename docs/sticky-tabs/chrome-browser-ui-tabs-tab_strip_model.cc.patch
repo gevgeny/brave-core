@@ -1,0 +1,197 @@
+diff --git a/chrome/browser/ui/tabs/tab_strip_model.cc b/chrome/browser/ui/tabs/tab_strip_model.cc
+index c8c7e12466..72f7af64e7 100644
+--- a/chrome/browser/ui/tabs/tab_strip_model.cc
++++ b/chrome/browser/ui/tabs/tab_strip_model.cc
+@@ -65,6 +65,7 @@
+ #include "chrome/browser/ui/tabs/tab_group_model.h"
+ #include "chrome/browser/ui/tabs/tab_model.h"
+ #include "chrome/browser/ui/tabs/tab_muted_utils.h"
++#include "chrome/browser/ui/tabs/sticky_tab_controller.h"  // STICKY_TABS
+ #include "chrome/browser/ui/tabs/tab_strip_model_delegate.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
+ #include "chrome/browser/ui/tabs/tab_strip_user_gesture_details.h"
+@@ -205,7 +206,7 @@ std::unique_ptr<TabGroupModel> TabGroupModelFactory::Create() {
+ 
+ DetachedTabCollection::DetachedTabCollection(
+     std::variant<std::unique_ptr<tabs::TabGroupTabCollection>,
+-                 std::unique_ptr<tabs::SplitTabCollection>> collection,
++                 std::unique_ptr<tabs::SplitTabCollection>, std::unique_ptr<tabs::TreeTabNodeTabCollection>> collection,
+     std::optional<int> active_index,
+     bool pinned)
+     : collection_(std::move(collection)),
+@@ -481,6 +482,14 @@ TabStripModel::DetachTabsAndCollectionsForInsertion(
+       owned_tabs_and_collections.emplace_back(
+           DetachSplitTabForInsertion(tab_interface->GetSplit().value()));
+     } else {
++      if (tab_interface->GetParentCollection()->type() ==
++          tabs::TabCollection::Type::TREE_NODE &&
++      contents_data_->ShouldDetachAsTreeSubtreeRoot(GetTabAtIndex(index),
++                                                    tab_interfaces)) {
++        owned_tabs_and_collections.emplace_back(DetachTreeTabNodeForInsertion(
++            GetTabAtIndex(index), tab_interfaces));
++        continue;
++      }
+       owned_tabs_and_collections.emplace_back(DetachTabWithReasonAt(
+           index, TabRemovedReason::kInsertedIntoOtherTabStrip,
+           tabs::TabInterface::DetachReason::kInsertIntoOtherWindow));
+@@ -1336,6 +1345,24 @@ void TabStripModel::CloseWebContents(content::WebContents* contents,
+ 
+ void TabStripModel::CloseWebContentsAt(int index, uint32_t close_types) {
+   CHECK(ContainsIndex(index));
++  // STICKY_TABS: intercept user-initiated close. Yellow (left home) resets;
++  // green (at home) asks for confirmation. Programmatic closes (session
++  // restore, quit, extension API) skip this because they omit USER_GESTURE.
++  if (close_types & CLOSE_USER_GESTURE) {
++    if (auto* sticky =
++            tabs::StickyTabController::From(GetTabAtIndex(index));
++        sticky && sticky->is_sticky()) {
++      if (sticky->has_left_home()) {
++        sticky->ResetToHome();
++        return;
++      }
++      content::WebContents* contents = GetWebContentsAt(index);
++      sticky->ShowCloseConfirmDialog(base::BindOnce(
++          &TabStripModel::CloseWebContents, weak_factory_.GetWeakPtr(),
++          contents, close_types & ~CLOSE_USER_GESTURE));
++      return;
++    }
++  }
+   CloseWebContents(GetWebContentsAt(index), close_types);
+ }
+ 
+@@ -1788,6 +1815,7 @@ void TabStripModel::AddTab(std::unique_ptr<tabs::TabModel> tab,
+   if (ui::PageTransitionTypeIncludingQualifiersIs(transition,
+                                                   ui::PAGE_TRANSITION_TYPED) &&
+       index == count()) {
++    tab->set_opener_was_set_for_empty_new_tab();
+     // Also, any tab opened at the end of the TabStrip with a "TYPED"
+     // transition inherit opener as well. This covers the cases where the user
+     // creates a New Tab (e.g. Ctrl+T, or clicks the New Tab button), or types
+@@ -2684,6 +2712,15 @@ bool TabStripModel::IsContextMenuCommandEnabled(
+   }
+ 
+   switch (command_id) {
++    case CommandRestoreTab:
++    case CommandBookmarkAllTabs:
++    case CommandShowVerticalTabs:
++    case CommandToggleTabMuted:
++    case CommandBringAllTabsToThisWindow:
++    case CommandCloseDuplicateTabs:
++    case CommandOpenInContainer:
++    case CommandRenameTab:
++      NOTREACHED();
+     case CommandNewTabToRight:
+     case CommandCloseTab:
+       return true;
+@@ -2799,6 +2836,16 @@ bool TabStripModel::IsContextMenuCommandEnabled(
+ 
+     case CommandToggleVertical:
+       return true;
++
++    // STICKY_TABS: enablement of sticky commands.
++    case CommandToggleSticky:
++    case CommandStickySetHome:
++    case CommandStickyRename:
++      return true;
++    case CommandStickyReset: {
++      auto* sticky = tabs::StickyTabController::From(GetTabAtIndex(context_index));
++      return sticky && sticky->has_left_home();
++    }
+   }
+   SCOPED_CRASH_KEY_NUMBER("TabStripModel", "command_id", command_id);
+   NOTREACHED() << "Unsupported command: " << command_id;
+@@ -2812,6 +2859,15 @@ void TabStripModel::ExecuteContextMenuCommand(int context_index,
+     return;
+   }
+   switch (command_id) {
++    case CommandRestoreTab:
++    case CommandBookmarkAllTabs:
++    case CommandShowVerticalTabs:
++    case CommandToggleTabMuted:
++    case CommandBringAllTabsToThisWindow:
++    case CommandCloseDuplicateTabs:
++    case CommandOpenInContainer:
++    case CommandRenameTab:
++      NOTREACHED();
+     case CommandNewTabToRight: {
+       base::UmaHistogramCounts1000(
+           "Tab.ContextMenu.NewTabToRight.SelectedTabsCount",
+@@ -3223,6 +3279,26 @@ void TabStripModel::ExecuteContextMenuCommand(int context_index,
+           IDC_TOGGLE_VERTICAL_TABS);
+       break;
+     }
++    // STICKY_TABS: dispatch sticky commands.
++    case CommandToggleSticky:
++    case CommandStickyReset:
++    case CommandStickySetHome:
++    case CommandStickyRename: {
++      auto* sticky = tabs::StickyTabController::From(GetTabAtIndex(context_index));
++      if (!sticky) {
++        break;
++      }
++      if (command_id == CommandToggleSticky) {
++        sticky->is_sticky() ? sticky->RemoveSticky() : sticky->MakeSticky();
++      } else if (command_id == CommandStickyReset) {
++        sticky->ResetToHome();
++      } else if (command_id == CommandStickySetHome) {
++        sticky->SetHomeToCurrent();
++      } else if (command_id == CommandStickyRename) {
++        sticky->ShowRenameDialog();
++      }
++      break;
++    }
+     case CommandAddToNewGroupFromMenuItem: {
+       base::UmaHistogramCounts1000(
+           "Tab.ContextMenu.AddToNewGroupFromMenuItem.SelectedTabsCount",
+@@ -3729,8 +3805,15 @@ bool TabStripModel::ShouldRunUnloadListenerBeforeClosing(
+ }
+ 
+ int TabStripModel::ConstrainInsertionIndex(int index, bool pinned_tab) const {
+-  return pinned_tab ? std::clamp(index, 0, IndexOfFirstNonPinnedTab())
+-                    : std::clamp(index, IndexOfFirstNonPinnedTab(), count());
++  // STICKY_TABS: new unpinned tabs never land before or inside the run of
++  // sticky tabs after the pinned ones. Moves (drags) stay unconstrained.
++  return pinned_tab
++             ? std::clamp(index, 0, IndexOfFirstNonPinnedTab())
++             : std::clamp(
++                   index,
++                   // STICKY_TABS: skip sticky run (and sticky groups).
++                   tabs::StickyTabController::IndexOfFirstNonStickyTab(*this),
++                   count());
+ }
+ 
+ int TabStripModel::ConstrainMoveIndex(int index, bool pinned_tab) const {
+@@ -3928,7 +4011,11 @@ int TabStripModel::InsertTabAtImpl(
+   if (pin && selection_model_.focused_group().has_value()) {
+     had_pinned_tabs_in_focus_session_ = true;
+   }
+-  index = ConstrainInsertionIndex(index, pin);
++  // STICKY_TABS: inserts into an explicit group (e.g. a link opened from a
++  // grouped tab) keep the caller's index so the group stays contiguous.
++  index = (group.has_value() && !pin)
++              ? std::clamp(index, IndexOfFirstNonPinnedTab(), count())
++              : ConstrainInsertionIndex(index, pin);
+ 
+   tabs::TabModel* const active_tab_model = GetActiveTabModel();
+ 
+@@ -4453,7 +4540,7 @@ void TabStripModel::MoveTabRelative(TabRelativeDirection direction) {
+ 
+ std::pair<std::optional<int>, std::optional<int>>
+ TabStripModel::GetAdjacentTabsAfterSelectedMove(
+-    base::PassKey<DraggingTabsSession>,
++    base::PassKey<DraggingTabsSessionChromium>,
+     int destination_index) {
+   const int pinned_tab_count = IndexOfFirstNonPinnedTab();
+   const std::vector<int> pinned_selected_indices = GetSelectedPinnedTabs();
+@@ -4936,8 +5023,10 @@ void TabStripModel::InsertTabAtIndexImpl(
+   }
+ 
+   tabs::TabInterface* old_active_tab = GetActiveTab();
++  auto* opener = tab_model->opener_was_set_for_empty_new_tab() ? nullptr : tab_model->opener();
+   contents_data_->AddTabRecursive(tabs::ScopedTab(tab_model.release()), index,
+-                                  group, pin);
++                                  group, pin, opener);
++
+   selection_model_.InvalidateListSelectionModel(base::PassKey<TabStripModel>());
+ 
+   // Start computing selection change after updating the indices in

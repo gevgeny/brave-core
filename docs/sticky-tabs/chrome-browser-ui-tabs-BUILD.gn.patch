@@ -1,0 +1,21 @@
+diff --git a/chrome/browser/ui/tabs/BUILD.gn b/chrome/browser/ui/tabs/BUILD.gn
+index bb4b18f7dc..ad7bf22502 100644
+--- a/chrome/browser/ui/tabs/BUILD.gn
++++ b/chrome/browser/ui/tabs/BUILD.gn
+@@ -439,6 +439,8 @@ if (!is_android) {
+       "split_tab_metrics.h",
+       "split_tab_util.h",
+       "split_view_iph_controller.h",
++      # STICKY_TABS: new controller header + impl.
++      "sticky_tab_controller.h",
+       "tab_attachment_tracker.h",
+       "tab_creation_metrics_controller.h",
+       "tab_data.h",
+@@ -514,6 +516,7 @@ if (!is_android) {
+       "split_tab_metrics.cc",
+       "split_tab_util.cc",
+       "split_view_iph_controller.cc",
++      "sticky_tab_controller.cc",
+       "tab_attachment_tracker.cc",
+       "tab_creation_metrics_controller.cc",
+       "tab_data.cc",

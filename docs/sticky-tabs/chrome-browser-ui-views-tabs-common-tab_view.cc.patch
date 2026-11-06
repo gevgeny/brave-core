@@ -1,0 +1,29 @@
+diff --git a/chrome/browser/ui/views/tabs/common/tab_view.cc b/chrome/browser/ui/views/tabs/common/tab_view.cc
+index 61a57c1534..19186f4b85 100644
+--- a/chrome/browser/ui/views/tabs/common/tab_view.cc
++++ b/chrome/browser/ui/views/tabs/common/tab_view.cc
+@@ -13,6 +13,7 @@
+ #include "base/metrics/user_metrics_action.h"
+ #include "base/time/time.h"
+ #include "chrome/browser/dictation/dictation_keyed_service.h"
++#include "chrome/browser/ui/tabs/sticky_tab_controller.h"  // STICKY_TABS
+ #include "chrome/browser/glic/browser_ui/tab_underline_controller.h"
+ #include "chrome/browser/glic/browser_ui/tab_underline_view.h"
+ #include "chrome/browser/glic/public/glic_enabling.h"
+@@ -627,6 +628,16 @@ bool TabView::OnKeyReleased(const ui::KeyEvent& event) {
+ }
+ 
+ bool TabView::OnMousePressed(const ui::MouseEvent& event) {
++  // STICKY_TABS: double-click on a titled sticky tab renames it.
++  if (event.IsOnlyLeftMouseButton() && event.GetClickCount() == 2) {
++    // TabView only exposes a const TabInterface; the tab itself is mutable.
++    auto* tab = const_cast<tabs::TabInterface*>(GetTabInterface());
++    auto* sticky = tabs::StickyTabController::From(tab);
++    if (sticky && sticky->is_sticky() && !tab->IsPinned()) {
++      sticky->ShowRenameDialog();
++      return true;
++    }
++  }
+   CHECK(collection_node_);
+ 
+   auto* controller = collection_node_->GetController();
