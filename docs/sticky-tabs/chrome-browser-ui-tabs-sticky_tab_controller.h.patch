@@ -1,9 +1,9 @@
 diff --git a/chrome/browser/ui/tabs/sticky_tab_controller.h b/chrome/browser/ui/tabs/sticky_tab_controller.h
 new file mode 100644
-index 0000000000..54a9331495
+index 0000000000..72a0191b2f
 --- /dev/null
 +++ b/chrome/browser/ui/tabs/sticky_tab_controller.h
-@@ -0,0 +1,96 @@
+@@ -0,0 +1,102 @@
 +// Copyright 2026 The ungoogled-chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -16,6 +16,7 @@ index 0000000000..54a9331495
 +
 +#include "base/callback_list.h"
 +#include "base/memory/weak_ptr.h"
++#include "components/tab_groups/tab_group_id.h"
 +#include "chrome/browser/ui/tabs/contents_observing_tab_feature.h"
 +#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 +#include "url/gurl.h"
@@ -61,9 +62,10 @@ index 0000000000..54a9331495
 +  const std::u16string& title() const { return title_; }
 +  const GURL& home_url() const { return home_url_; }
 +
-+  // Stores current URL + title as home state. Unpinned tabs leave their group
-+  // and move right after the pinned + sticky tabs.
-+  void MakeSticky();
++  // Captures current URL + title as home state, marks the tab sticky.
++  // The tab is NOT moved; callers (group-join observer, pinned-state
++  // observer) ensure the tab is already where it should be.
++  void MakeStickyInPlace();
 +  void RemoveSticky();
 +  // Loads home URL and drops back/forward history.
 +  void ResetToHome();
@@ -81,6 +83,9 @@ index 0000000000..54a9331495
 +  void DidFinishNavigation(content::NavigationHandle* navigation) override;
 +
 +  void OnPinnedStateChanged(TabInterface* tab, bool pinned);
++  // STICKY_TABS: tab in any group is auto-sticky; leaving the group unsticks.
++  void OnGroupChanged(TabInterface* tab,
++                      std::optional<tab_groups::TabGroupId> new_group);
 +  void SetLeftHome(bool left_home);
 +  // Redraws the tab (title, attention dot) and refreshes menu state.
 +  void NotifyChanged();
@@ -93,6 +98,7 @@ index 0000000000..54a9331495
 +  std::u16string title_;
 +  GURL home_url_;
 +  base::CallbackListSubscription pinned_subscription_;
++  base::CallbackListSubscription group_subscription_;
 +  ui::ScopedUnownedUserData<StickyTabController> scoped_data_holder_;
 +  base::WeakPtrFactory<StickyTabController> weak_factory_{this};
 +};

@@ -1,9 +1,9 @@
 diff --git a/chrome/browser/ui/tabs/sticky_tab_controller.cc b/chrome/browser/ui/tabs/sticky_tab_controller.cc
 new file mode 100644
-index 0000000000..009005406f
+index 0000000000..473d882e90
 --- /dev/null
 +++ b/chrome/browser/ui/tabs/sticky_tab_controller.cc
-@@ -0,0 +1,365 @@
+@@ -0,0 +1,375 @@
 +// Copyright 2026 The ungoogled-chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -52,11 +52,6 @@ index 0000000000..009005406f
 +gfx::Range GroupRange(const TabStripModel& model,
 +                      const tab_groups::TabGroupId& group) {
 +  return model.group_model()->GetTabGroup(group)->ListTabs();
-+}
-+
-+TabStripModel* GetModel(TabInterface& tab) {
-+  BrowserWindowInterface* window = tab.GetBrowserWindowInterface();
-+  return window ? window->GetTabStripModel() : nullptr;
 +}
 +
 +}  // namespace
@@ -134,6 +129,8 @@ index 0000000000..009005406f
 +      scoped_data_holder_(tab->GetUnownedUserDataHost(), *this) {
 +  pinned_subscription_ = tab->RegisterPinnedStateChanged(base::BindRepeating(
 +      &StickyTabController::OnPinnedStateChanged, base::Unretained(this)));
++  group_subscription_ = tab->RegisterGroupChanged(base::BindRepeating(
++      &StickyTabController::OnGroupChanged, base::Unretained(this)));
 +  content::WebContents* contents = tab->GetContents();
 +  if (auto* data = static_cast<RestoreData*>(
 +          contents->GetUserData(kRestoreDataKey))) {
@@ -146,13 +143,28 @@ index 0000000000..009005406f
 +
 +StickyTabController::~StickyTabController() = default;
 +
-+void StickyTabController::MakeSticky() {
++namespace {
++// Shared body for MakeSticky / MakeStickyInPlace: capture URL+title, mark
++// sticky, refresh UI, persist.
++void ApplyStickyState(StickyTabController* self,
++                      TabInterface& tab,
++                      bool& sticky,
++                      GURL& home_url,
++                      std::u16string& title,
++                      bool& left_home,
++                      const GURL& new_home) {
++  sticky = true;
++  home_url = new_home;
++  title = tab.GetContents()->GetTitle();
++  left_home = false;
++}
++}  // namespace
++
++void StickyTabController::MakeStickyInPlace() {
 +  if (sticky_) {
 +    return;
 +  }
 +  content::WebContents* contents = tab().GetContents();
-+  // Unloaded tabs (lazy restore, pending first navigation) have no committed
-+  // URL yet. Never store an empty home URL; pinned tabs retry on first load.
 +  GURL home_url = contents->GetLastCommittedURL();
 +  if (!home_url.is_valid()) {
 +    home_url = contents->GetVisibleURL();
@@ -160,31 +172,13 @@ index 0000000000..009005406f
 +  if (!home_url.is_valid()) {
 +    return;
 +  }
-+  TabStripModel* model = GetModel(tab());
-+  // Pinned tabs already live at the front. Grouped tabs stay in their group
-+  // and the whole group moves to the end of the sticky run. Split tabs must
-+  // stay adjacent to their partner, so they are not moved.
-+  // ponytail: split tabs become sticky in place; move the split if needed.
-+  if (model && !tab().IsPinned()) {
-+    // Computed before `sticky_` is set, so this tab (and a group with no other
-+    // sticky tab) is not part of the run yet.
-+    const int target = IndexOfFirstNonStickyTab(*model);
-+    if (std::optional<tab_groups::TabGroupId> group = tab().GetGroup()) {
-+      if (static_cast<int>(GroupRange(*model, *group).start()) > target) {
-+        model->MoveGroupTo(*group, target);
-+      }
-+    } else if (!tab().GetSplit()) {
-+      model->MoveWebContentsAt(model->GetIndexOfTab(&tab()), target,
-+                               /*select_after_move=*/false);
-+    }
-+  }
-+  sticky_ = true;
-+  home_url_ = home_url;
-+  title_ = contents->GetTitle();
-+  left_home_ = false;
++  ApplyStickyState(this, tab(), sticky_, home_url_, title_, left_home_,
++                   home_url);
 +  NotifyChanged();
 +  Persist();
 +}
++
++
 +
 +void StickyTabController::RemoveSticky() {
 +  sticky_ = false;
@@ -208,7 +202,7 @@ index 0000000000..009005406f
 +
 +void StickyTabController::SetHomeToCurrent() {
 +  if (!sticky_) {
-+    MakeSticky();
++    MakeStickyInPlace();
 +    return;
 +  }
 +  const GURL url = tab().GetContents()->GetLastCommittedURL();
@@ -236,7 +230,7 @@ index 0000000000..009005406f
 +    return;
 +  }
 +  if (!sticky_) {
-+    MakeSticky();  // Pinned tab not loaded yet: lazy sticky state.
++    MakeStickyInPlace();  // Pinned tab not loaded yet: lazy sticky state.
 +    if (!sticky_) {
 +      return;  // No URL yet.
 +    }
@@ -303,7 +297,7 @@ index 0000000000..009005406f
 +    // restore without saved state) become sticky on first load; the title
 +    // stays empty so the page title is shown until the user renames it.
 +    if (tab().IsPinned() && !navigation->IsSameDocument()) {
-+      MakeSticky();
++      MakeStickyInPlace();
 +      title_.clear();
 +      Persist();
 +    }
@@ -321,12 +315,28 @@ index 0000000000..009005406f
 +  SetLeftHome(navigation->GetURL() != home_url_);
 +}
 +
++void StickyTabController::OnGroupChanged(
++    TabInterface* tab,
++    std::optional<tab_groups::TabGroupId> new_group) {
++  // STICKY_TABS: tab in any group is sticky; leaving unsticks. Pinned tabs
++  // cannot be in groups in Chromium, so this never fires for them.
++  if (new_group.has_value()) {
++    if (!sticky_) {
++      MakeStickyInPlace();
++    }
++  } else if (sticky_) {
++    RemoveSticky();
++  }
++}
++
 +void StickyTabController::OnPinnedStateChanged(TabInterface* tab,
 +                                               bool pinned) {
-+  // Pinned tabs are always sticky. Unpinning keeps the tab sticky (now with a
-+  // visible title); the user can remove it from the menu.
++  // STICKY_TABS: pinned tabs are always sticky. Unpinning unsticks unless the
++  // tab is in a group (groups are the other auto-sticky trigger).
 +  if (pinned) {
-+    MakeSticky();
++    MakeStickyInPlace();
++  } else if (sticky_ && !tab->GetGroup().has_value()) {
++    RemoveSticky();
 +  }
 +}
 +

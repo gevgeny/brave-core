@@ -1,8 +1,8 @@
 diff --git a/components/tabs/public/tab_context_menu_command.h b/components/tabs/public/tab_context_menu_command.h
-index 0ed448fdc4..6ed77c87f4 100644
+index 0ed448fdc4..a2663e042f 100644
 --- a/components/tabs/public/tab_context_menu_command.h
 +++ b/components/tabs/public/tab_context_menu_command.h
-@@ -39,6 +39,18 @@ enum TabContextMenuCommand {
+@@ -39,6 +39,17 @@ enum TabContextMenuCommand {
    CommandGlicSwitchToRecentConversation,
    CommandGlicUnshare,
    CommandToggleFocusGroup,
@@ -14,7 +14,6 @@ index 0ed448fdc4..6ed77c87f4 100644
 +  CommandCloseDuplicateTabs,
 +  CommandOpenInContainer,
 +  CommandRenameTab,
-+  CommandToggleSticky,
 +  CommandStickyReset,
 +  CommandStickySetHome,
 +  CommandStickyRename,
