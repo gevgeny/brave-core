@@ -1,0 +1,33 @@
+diff --git a/chrome/browser/ui/tabs/tab_menu_model.cc b/chrome/browser/ui/tabs/tab_menu_model.cc
+index 948fb35bd6..cb392f5726 100644
+--- a/chrome/browser/ui/tabs/tab_menu_model.cc
++++ b/chrome/browser/ui/tabs/tab_menu_model.cc
+@@ -40,6 +40,7 @@
+ #include "chrome/browser/ui/tabs/split_view_layout_menu_model.h"
+ #include "chrome/browser/ui/tabs/tab_group_model.h"
+ #include "chrome/browser/ui/tabs/tab_menu_model_delegate.h"
++#include "chrome/browser/ui/tabs/sticky_tab_controller.h"  // STICKY_TABS
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model_delegate.h"
+ #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
+@@ -534,6 +535,20 @@ void TabMenuModel::Build(int index) {
+             ui::kColorMenuIcon, ui::SimpleMenuModel::kDefaultIconSize));
+   }
+ 
++  // STICKY_TABS, see ungoogled-chromium/docs/sticky-tabs.md.
++  // ponytail: hardcoded English labels, avoids regenerating
++  // generated_resources.h (thousands of dependents). Move to .grd if localized.
++  if (auto* sticky =
++          tabs::StickyTabController::From(tab_strip_->GetTabAtIndex(index))) {
++    const bool pinned = tab_strip_->IsTabPinned(index);
++    if (pinned || sticky->is_sticky()) {
++      AddItem(TabStripModel::CommandStickyReset, u"Back to sticky URL");
++      AddItem(TabStripModel::CommandStickySetHome,
++              u"Set current page as sticky URL");
++      AddItem(TabStripModel::CommandStickyRename, u"Rename\u2026");
++    }
++  }
++
+   // When the menu targets a single split, "Mute sites" opens a submenu that can
+   // also mute the site in just one of the views.
+   const std::optional<split_tabs::SplitTabId> split =

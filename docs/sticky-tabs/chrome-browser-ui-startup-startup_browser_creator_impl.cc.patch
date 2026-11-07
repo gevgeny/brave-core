@@ -1,0 +1,90 @@
+diff --git a/chrome/browser/ui/startup/startup_browser_creator_impl.cc b/chrome/browser/ui/startup/startup_browser_creator_impl.cc
+index 1e34f398af..1e4ed0177e 100644
+--- a/chrome/browser/ui/startup/startup_browser_creator_impl.cc
++++ b/chrome/browser/ui/startup/startup_browser_creator_impl.cc
+@@ -50,6 +50,8 @@
+ #include "chrome/browser/ui/startup/startup_tab_provider.h"
+ #include "chrome/browser/ui/startup/startup_types.h"
+ #include "chrome/browser/ui/tabs/shared_tab_group_version_upgrade_modal.h"
++#include "chrome/browser/ui/tabs/pinned_tab_codec.h"
++#include "chrome/browser/ui/tabs/sticky_tab_controller.h"  // STICKY_TABS
+ #include "chrome/browser/ui/tabs/tab_enums.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+ #include "chrome/browser/ui/toasts/api/toast_id.h"
+@@ -65,6 +67,7 @@
+ #include "components/prefs/pref_service.h"
+ #include "components/signin/public/base/signin_switches.h"
+ #include "components/tab_groups/tab_group_id.h"
++#include "components/tabs/public/tab_interface.h"
+ #include "content/public/browser/child_process_security_policy.h"
+ #include "content/public/browser/dom_storage_context.h"
+ #include "content/public/browser/storage_partition.h"
+@@ -431,6 +434,7 @@ BrowserWindowInterface* StartupBrowserCreatorImpl::OpenTabsInBrowser(
+       params.disposition = WindowOpenDisposition::CURRENT_TAB;
+       params.tabstrip_add_types = ADD_NONE;
+       first_tab = false;
++      BraveModifyStartupTabNavigationParams(tab, browser, params);
+       Navigate(&params);
+       continue;
+     }
+@@ -465,8 +469,19 @@ BrowserWindowInterface* StartupBrowserCreatorImpl::OpenTabsInBrowser(
+     }
+ #endif  // BUILDFLAG(ENABLE_RLZ)
+ 
++    BraveModifyStartupTabNavigationParams(tab, browser, params);
+     Navigate(&params);
+     first_tab = false;
++
++    // STICKY_TABS pinned restored from the pinned_tabs pref (session not
++    // restored): reapply the custom title; home URL is the tab URL.
++    if (!tab.sticky_title.empty() && params.navigated_or_inserted_contents) {
++      if (auto* sticky = tabs::StickyTabController::From(
++              tabs::TabInterface::GetFromContents(
++                  params.navigated_or_inserted_contents))) {
++        sticky->RestoreState(tab.url, tab.sticky_title);
++      }
++    }
+   }
+   if (!browser->GetTabStripModel()->GetActiveWebContents() &&
+       !process_headless_commands) {
+@@ -775,6 +790,9 @@ BrowserWindowInterface* StartupBrowserCreatorImpl::RestoreOrCreateBrowser(
+     if (browser_window) {
+       return browser_window;
+     }
++    // STICKY_TABS: session restore returned nothing (missing/corrupt session).
++    // Fall through to normal open, but prepend the pinned_tabs backup so
++    // sticky pinned tabs still come back.
+   } else if (behavior == BrowserOpenBehavior::USE_EXISTING ||
+              behavior ==
+                  BrowserOpenBehavior::USE_EXISTING_AND_OVERWRITE_ACTIVE_TAB) {
+@@ -784,14 +802,26 @@ BrowserWindowInterface* StartupBrowserCreatorImpl::RestoreOrCreateBrowser(
+   base::AutoReset<bool> synchronous_launch_resetter(
+       &StartupBrowserCreator::in_synchronous_profile_launch_, true);
+ 
++  // STICKY_TABS: if we expected a session restore but it did not succeed,
++  // open the pinned_tabs backup so sticky pinned tabs are not lost.
++  StartupTabs effective_tabs = tabs;
++  if (behavior == BrowserOpenBehavior::SYNCHRONOUS_RESTORE) {
++    StartupTabs pinned = PinnedTabCodec::ReadPinnedTabs(profile_);
++    if (!pinned.empty()) {
++      pinned.insert(pinned.end(), effective_tabs.begin(),
++                    effective_tabs.end());
++      effective_tabs = std::move(pinned);
++    }
++  }
++
+   // OpenTabsInBrowser requires at least one tab be passed. As a fallback to
+-  // prevent a crash, use the NTP if |tabs| is empty. This could happen if
+-  // we expected a session restore to happen but it did not occur/succeed.
++  // prevent a crash, use the NTP if |effective_tabs| is empty. This could
++  // happen if we expected a session restore to happen but it did not occur.
+   browser = OpenTabsInBrowser(
+       browser, process_startup,
+-      (tabs.empty()
++      (effective_tabs.empty()
+            ? StartupTabs({StartupTab(chrome::ChromeUINewTabURLAsGURL())})
+-           : tabs),
++           : effective_tabs),
+       (behavior == BrowserOpenBehavior::USE_EXISTING_AND_OVERWRITE_ACTIVE_TAB
+            ? (TabOverWrite::kYes)
+            : (TabOverWrite::kNo)));

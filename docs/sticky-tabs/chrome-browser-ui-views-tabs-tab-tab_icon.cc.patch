@@ -1,0 +1,46 @@
+diff --git a/chrome/browser/ui/views/tabs/tab/tab_icon.cc b/chrome/browser/ui/views/tabs/tab/tab_icon.cc
+index dca6d70923..54da23c013 100644
+--- a/chrome/browser/ui/views/tabs/tab/tab_icon.cc
++++ b/chrome/browser/ui/views/tabs/tab/tab_icon.cc
+@@ -129,6 +129,18 @@ void TabIcon::SetData(const tabs::TabData& data) {
+   SetDiscarded(data.should_show_discard_status);
+   has_tab_data_ = true;
+ 
++  // STICKY_TABS: choose dot color from TabData::sticky_state.
++  std::optional<ui::ColorId> sticky_dot_color;
++  if (data.sticky_state == tabs::TabData::StickyState::kHome) {
++    sticky_dot_color = ui::kColorAlertLowSeverity;
++  } else if (data.sticky_state == tabs::TabData::StickyState::kLeftHome) {
++    sticky_dot_color = ui::kColorAlertMediumSeverityIcon;
++  }
++  if (sticky_dot_color_ != sticky_dot_color) {
++    sticky_dot_color_ = sticky_dot_color;
++    SchedulePaint();
++  }
++
+   UpdateThrobber();
+ 
+   const bool showing_load = GetShowingLoadingAnimation();
+@@ -239,7 +251,8 @@ void TabIcon::OnPaint(gfx::Canvas* canvas) {
+       std::min(gfx::kFaviconSize, contents_bounds.height()));
+ 
+   // Don't paint the attention indicator during the loading animation.
+-  if (!GetShowingLoadingAnimation() && GetShowingAttentionIndicator() &&
++  if (!GetShowingLoadingAnimation() &&
++      (GetShowingAttentionIndicator() || sticky_dot_color_) &&
+       !should_display_crashed_favicon_) {
+     PaintAttentionIndicatorAndIcon(canvas, GetIconToPaint(), icon_bounds);
+   } else if (was_discard_indicator_shown_) {
+@@ -305,7 +318,11 @@ void TabIcon::PaintAttentionIndicatorAndIcon(gfx::Canvas* canvas,
+ 
+   // Draws the actual attention indicator.
+   cc::PaintFlags indicator_flags;
+-  indicator_flags.setColor(views::GetCascadingAccentColor(this));
++  // STICKY_TABS: real attention keeps accent color; else use sticky dot color.
++  indicator_flags.setColor(
++      GetShowingAttentionIndicator() || !sticky_dot_color_
++          ? views::GetCascadingAccentColor(this)
++          : GetColorProvider()->GetColor(*sticky_dot_color_));
+   indicator_flags.setAntiAlias(true);
+   canvas->DrawCircle(circle_center, kAttentionIndicatorRadius, indicator_flags);
+ }

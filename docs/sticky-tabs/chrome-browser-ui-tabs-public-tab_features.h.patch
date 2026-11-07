@@ -1,0 +1,46 @@
+diff --git a/chrome/browser/ui/tabs/public/tab_features.h b/chrome/browser/ui/tabs/public/tab_features.h
+index a22dcb9e94..ae8396102a 100644
+--- a/chrome/browser/ui/tabs/public/tab_features.h
++++ b/chrome/browser/ui/tabs/public/tab_features.h
+@@ -395,6 +395,8 @@ class ContextHighlightTabFeature;
+ class InactiveWindowMouseEventController;
+ class PageContextEligibilityHelper;
+ class TabAlertController;
++// STICKY_TABS: per-tab controller (see sticky_tab_controller.h).
++class StickyTabController;
+ class TabAttachmentTracker;
+ class TabCreationMetricsController;
+ class TabDialogManager;
+@@ -409,7 +411,7 @@ class TabInterface;
+ class TabFeatures {
+  public:
+   TabFeatures();
+-  ~TabFeatures();
++  virtual ~TabFeatures();
+ 
+   TabFeatures(const TabFeatures&) = delete;
+   TabFeatures& operator=(const TabFeatures&) = delete;
+@@ -547,12 +549,13 @@ class TabFeatures {
+   }
+ 
+   // Called exactly once to initialize features.
+-  void Init(TabInterface& tab, Profile* profile);
++  virtual void Init(TabInterface& tab, Profile* profile);
+ 
+   static ui::UserDataFactoryWithOwner<TabInterface>&
+   GetUserDataFactoryForTesting();
+ 
+  private:
++  friend class BraveTabFeatures;
+   bool initialized_ = false;
+ 
+   // Returns the factory used to create owned components.
+@@ -946,6 +949,8 @@ class TabFeatures {
+       filter_navigation_observer_;
+ 
+   std::unique_ptr<TabAttachmentTracker> tab_attachment_tracker_;
++  // STICKY_TABS: per-tab controller.
++  std::unique_ptr<StickyTabController> sticky_tab_controller_;
+ 
+   // Prefetches zero-prefix suggestions on opening or switching to an NTP.
+   std::unique_ptr<ZeroSuggestPrefetchTabHelper>

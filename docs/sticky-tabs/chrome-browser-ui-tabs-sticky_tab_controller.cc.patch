@@ -1,0 +1,381 @@
+diff --git a/chrome/browser/ui/tabs/sticky_tab_controller.cc b/chrome/browser/ui/tabs/sticky_tab_controller.cc
+new file mode 100644
+index 0000000000..473d882e90
+--- /dev/null
++++ b/chrome/browser/ui/tabs/sticky_tab_controller.cc
+@@ -0,0 +1,375 @@
++// Copyright 2026 The ungoogled-chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/tabs/sticky_tab_controller.h"
++
++#include "base/functional/bind.h"
++#include "base/strings/utf_string_conversions.h"
++#include "chrome/browser/sessions/session_service.h"
++#include "chrome/browser/ui/dialogs/browser_dialogs.h"
++#include "chrome/browser/sessions/session_service_factory.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/tabs/pinned_tab_codec.h"
++#include "chrome/browser/ui/tabs/tab_group_model.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "components/tab_groups/tab_group_id.h"
++#include "components/tabs/public/tab_group.h"
++#include "ui/gfx/range/range.h"
++#include "components/sessions/content/session_tab_helper.h"
++#include "components/tabs/public/tab_interface.h"
++#include "content/public/browser/navigation_controller.h"
++#include "content/public/browser/navigation_handle.h"
++#include "content/public/browser/invalidate_type.h"
++#include "content/public/browser/web_contents.h"
++#include "ui/base/interaction/element_identifier.h"
++#include "ui/base/models/dialog_model.h"
++#include "ui/base/page_transition_types.h"
++
++namespace tabs {
++
++namespace {
++
++DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kStickyTitleFieldId);
++
++constexpr char kHomeUrlKey[] = "sticky.home_url";
++constexpr char kTitleKey[] = "sticky.title";
++constexpr char kRestoreDataKey[] = "sticky_tab_restore_data";
++
++// Restored state parked on the WebContents until the tab is created.
++struct RestoreData : base::SupportsUserData::Data {
++  GURL home_url;
++  std::u16string title;
++};
++
++// Index range of `group` in `model`.
++gfx::Range GroupRange(const TabStripModel& model,
++                      const tab_groups::TabGroupId& group) {
++  return model.group_model()->GetTabGroup(group)->ListTabs();
++}
++
++}  // namespace
++
++// static
++StickyTabController* StickyTabController::From(TabInterface* tab) {
++  return tab ? Get(tab->GetUnownedUserDataHost()) : nullptr;
++}
++
++// static
++const StickyTabController* StickyTabController::From(const TabInterface* tab) {
++  return tab ? Get(tab->GetUnownedUserDataHost()) : nullptr;
++}
++
++// static
++void StickyTabController::PopulateExtraData(
++    const TabInterface* tab,
++    std::map<std::string, std::string>* extra_data) {
++  const StickyTabController* sticky = From(tab);
++  if (!sticky || !sticky->is_sticky()) {
++    return;
++  }
++  (*extra_data)[kHomeUrlKey] = sticky->home_url_.spec();
++  (*extra_data)[kTitleKey] = base::UTF16ToUTF8(sticky->title_);
++}
++
++// static
++void StickyTabController::StashExtraData(
++    content::WebContents* contents,
++    const std::map<std::string, std::string>& extra_data) {
++  auto home = extra_data.find(kHomeUrlKey);
++  if (home == extra_data.end() || !GURL(home->second).is_valid()) {
++    return;
++  }
++  auto data = std::make_unique<RestoreData>();
++  data->home_url = GURL(home->second);
++  if (auto title = extra_data.find(kTitleKey); title != extra_data.end()) {
++    data->title = base::UTF8ToUTF16(title->second);
++  }
++  contents->SetUserData(kRestoreDataKey, std::move(data));
++}
++
++// static
++int StickyTabController::IndexOfFirstNonStickyTab(const TabStripModel& model) {
++  // A tab group with at least one sticky tab counts as sticky as a whole, so
++  // the returned index is always a group boundary.
++  int index = model.IndexOfFirstNonPinnedTab();
++  while (index < model.count()) {
++    if (std::optional<tab_groups::TabGroupId> group =
++            model.GetTabGroupForTab(index)) {
++      const gfx::Range range = GroupRange(model, *group);
++      bool has_sticky = false;
++      for (size_t i = range.start(); i < range.end() && !has_sticky; ++i) {
++        const StickyTabController* sticky =
++            From(model.GetTabAtIndex(static_cast<int>(i)));
++        has_sticky = sticky && sticky->is_sticky();
++      }
++      if (!has_sticky) {
++        break;
++      }
++      index = static_cast<int>(range.end());
++      continue;
++    }
++    StickyTabController* sticky = From(model.GetTabAtIndex(index));
++    if (!sticky || !sticky->is_sticky()) {
++      break;
++    }
++    ++index;
++  }
++  return index;
++}
++
++StickyTabController::StickyTabController(TabInterface* tab)
++    : ContentsObservingTabFeature(*tab),
++      scoped_data_holder_(tab->GetUnownedUserDataHost(), *this) {
++  pinned_subscription_ = tab->RegisterPinnedStateChanged(base::BindRepeating(
++      &StickyTabController::OnPinnedStateChanged, base::Unretained(this)));
++  group_subscription_ = tab->RegisterGroupChanged(base::BindRepeating(
++      &StickyTabController::OnGroupChanged, base::Unretained(this)));
++  content::WebContents* contents = tab->GetContents();
++  if (auto* data = static_cast<RestoreData*>(
++          contents->GetUserData(kRestoreDataKey))) {
++    sticky_ = true;
++    home_url_ = data->home_url;
++    title_ = data->title;
++    contents->RemoveUserData(kRestoreDataKey);
++  }
++}
++
++StickyTabController::~StickyTabController() = default;
++
++namespace {
++// Shared body for MakeSticky / MakeStickyInPlace: capture URL+title, mark
++// sticky, refresh UI, persist.
++void ApplyStickyState(StickyTabController* self,
++                      TabInterface& tab,
++                      bool& sticky,
++                      GURL& home_url,
++                      std::u16string& title,
++                      bool& left_home,
++                      const GURL& new_home) {
++  sticky = true;
++  home_url = new_home;
++  title = tab.GetContents()->GetTitle();
++  left_home = false;
++}
++}  // namespace
++
++void StickyTabController::MakeStickyInPlace() {
++  if (sticky_) {
++    return;
++  }
++  content::WebContents* contents = tab().GetContents();
++  GURL home_url = contents->GetLastCommittedURL();
++  if (!home_url.is_valid()) {
++    home_url = contents->GetVisibleURL();
++  }
++  if (!home_url.is_valid()) {
++    return;
++  }
++  ApplyStickyState(this, tab(), sticky_, home_url_, title_, left_home_,
++                   home_url);
++  NotifyChanged();
++  Persist();
++}
++
++
++
++void StickyTabController::RemoveSticky() {
++  sticky_ = false;
++  left_home_ = false;
++  prune_history_on_commit_ = false;
++  title_.clear();
++  home_url_ = GURL();
++  NotifyChanged();
++  Persist();
++}
++
++void StickyTabController::ResetToHome() {
++  if (!sticky_ || !home_url_.is_valid()) {
++    return;
++  }
++  prune_history_on_commit_ = true;
++  content::NavigationController::LoadURLParams params(home_url_);
++  params.transition_type = ui::PAGE_TRANSITION_AUTO_BOOKMARK;
++  tab().GetContents()->GetController().LoadURLWithParams(params);
++}
++
++void StickyTabController::SetHomeToCurrent() {
++  if (!sticky_) {
++    MakeStickyInPlace();
++    return;
++  }
++  const GURL url = tab().GetContents()->GetLastCommittedURL();
++  if (!url.is_valid()) {
++    return;
++  }
++  home_url_ = url;
++  left_home_ = false;
++  NotifyChanged();
++  Persist();
++}
++
++void StickyTabController::SetTitle(const std::u16string& title) {
++  if (!sticky_) {
++    return;
++  }
++  title_ = title;
++  NotifyChanged();
++  Persist();
++}
++
++void StickyTabController::ShowRenameDialog() {
++  BrowserWindowInterface* window = tab().GetBrowserWindowInterface();
++  if (!window) {
++    return;
++  }
++  if (!sticky_) {
++    MakeStickyInPlace();  // Pinned tab not loaded yet: lazy sticky state.
++    if (!sticky_) {
++      return;  // No URL yet.
++    }
++  }
++  // ponytail: hardcoded English strings, see tab_menu_model.cc.
++  ui::DialogModel::Builder builder;
++  ui::DialogModel* model = builder.model();
++  builder.SetTitle(u"Rename tab")
++      .AddTextfield(kStickyTitleFieldId, std::u16string(),
++                    title_.empty() ? tab().GetContents()->GetTitle() : title_,
++                    ui::DialogModelTextfield::Params().SetAccessibleName(
++                        u"Tab name"))
++      .SetInitiallyFocusedField(kStickyTitleFieldId)
++      .AddOkButton(base::BindOnce(
++          [](base::WeakPtr<StickyTabController> self,
++             ui::DialogModel* model) {
++            if (self) {
++              self->SetTitle(
++                  model->GetTextfieldByUniqueId(kStickyTitleFieldId)->text());
++            }
++          },
++          weak_factory_.GetWeakPtr(), model))
++      .AddCancelButton(base::DoNothing());
++  chrome::ShowBrowserModal(window, builder.Build());
++}
++
++void StickyTabController::ShowCloseConfirmDialog(base::OnceClosure on_confirm) {
++  BrowserWindowInterface* window = tab().GetBrowserWindowInterface();
++  if (!window) {
++    std::move(on_confirm).Run();
++    return;
++  }
++  // ponytail: hardcoded English strings, see tab_menu_model.cc.
++  ui::DialogModel::Builder builder;
++  const std::u16string name =
++      !title_.empty() ? title_ : tab().GetContents()->GetTitle();
++  builder.SetTitle(u"Close sticky tab?")
++      .AddParagraph(ui::DialogModelLabel(
++          u"\u201c" + name + u"\u201d is sticky. Close it anyway?"))
++      .AddOkButton(base::BindOnce([](base::OnceClosure cb) {
++                     std::move(cb).Run();
++                   }, std::move(on_confirm)), ui::DialogModel::Button::Params().SetLabel(u"Close"))
++      .AddCancelButton(base::DoNothing());
++  chrome::ShowBrowserModal(window, builder.Build());
++}
++
++void StickyTabController::RestoreState(const GURL& home_url,
++                                       const std::u16string& title) {
++  sticky_ = true;
++  home_url_ = home_url;
++  title_ = title;
++  left_home_ = false;
++  NotifyChanged();
++  Persist();
++}
++
++void StickyTabController::DidFinishNavigation(
++    content::NavigationHandle* navigation) {
++  if (!navigation->IsInPrimaryMainFrame() || !navigation->HasCommitted()) {
++    return;
++  }
++  if (!sticky_) {
++    // Pinned tabs are always sticky. Tabs inserted already pinned (startup,
++    // restore without saved state) become sticky on first load; the title
++    // stays empty so the page title is shown until the user renames it.
++    if (tab().IsPinned() && !navigation->IsSameDocument()) {
++      MakeStickyInPlace();
++      title_.clear();
++      Persist();
++    }
++    return;
++  }
++  if (prune_history_on_commit_ && !navigation->IsSameDocument()) {
++    prune_history_on_commit_ = false;
++    content::NavigationController& controller =
++        web_contents()->GetController();
++    if (controller.CanPruneAllButLastCommitted()) {
++      controller.PruneAllButLastCommitted();
++    }
++  }
++  // Exact match, `#fragment` included (fires for same-document changes too).
++  SetLeftHome(navigation->GetURL() != home_url_);
++}
++
++void StickyTabController::OnGroupChanged(
++    TabInterface* tab,
++    std::optional<tab_groups::TabGroupId> new_group) {
++  // STICKY_TABS: tab in any group is sticky; leaving unsticks. Pinned tabs
++  // cannot be in groups in Chromium, so this never fires for them.
++  if (new_group.has_value()) {
++    if (!sticky_) {
++      MakeStickyInPlace();
++    }
++  } else if (sticky_) {
++    RemoveSticky();
++  }
++}
++
++void StickyTabController::OnPinnedStateChanged(TabInterface* tab,
++                                               bool pinned) {
++  // STICKY_TABS: pinned tabs are always sticky. Unpinning unsticks unless the
++  // tab is in a group (groups are the other auto-sticky trigger).
++  if (pinned) {
++    MakeStickyInPlace();
++  } else if (sticky_ && !tab->GetGroup().has_value()) {
++    RemoveSticky();
++  }
++}
++
++void StickyTabController::SetLeftHome(bool left_home) {
++  if (left_home_ == left_home) {
++    return;
++  }
++  left_home_ = left_home;
++  NotifyChanged();
++}
++
++void StickyTabController::NotifyChanged() {
++  // Tab views read TabData via TabDataObserver, which only refreshes on
++  // TabUIHelper changes. A title invalidation takes the same path as a page
++  // title change (Browser -> BrowserUiController -> NotifyTabUIChanged).
++  tab().GetContents()->NotifyNavigationStateChanged(
++      content::INVALIDATE_TYPE_TITLE);
++}
++
++void StickyTabController::Persist() {
++  BrowserWindowInterface* window = tab().GetBrowserWindowInterface();
++  if (!window) {
++    return;
++  }
++  if (SessionService* session =
++          SessionServiceFactory::GetForProfileIfExisting(window->GetProfile())) {
++    // Empty values clear the state (see StashExtraData).
++    const SessionID tab_id =
++        sessions::SessionTabHelper::IdForTab(tab().GetContents());
++    session->AddTabExtraData(window->GetSessionID(), tab_id, kHomeUrlKey,
++                             sticky_ ? home_url_.spec() : std::string());
++    session->AddTabExtraData(window->GetSessionID(), tab_id, kTitleKey,
++                             base::UTF16ToUTF8(title_));
++  }
++  if (tab().IsPinned()) {
++    PinnedTabCodec::WritePinnedTabs(window->GetProfile());
++  }
++}
++
++DEFINE_USER_DATA(StickyTabController);
++
++}  // namespace tabs

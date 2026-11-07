@@ -1,0 +1,108 @@
+diff --git a/chrome/browser/ui/tabs/sticky_tab_controller.h b/chrome/browser/ui/tabs/sticky_tab_controller.h
+new file mode 100644
+index 0000000000..72a0191b2f
+--- /dev/null
++++ b/chrome/browser/ui/tabs/sticky_tab_controller.h
+@@ -0,0 +1,102 @@
++// Copyright 2026 The ungoogled-chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_TABS_STICKY_TAB_CONTROLLER_H_
++#define CHROME_BROWSER_UI_TABS_STICKY_TAB_CONTROLLER_H_
++
++#include <map>
++#include <string>
++
++#include "base/callback_list.h"
++#include "base/memory/weak_ptr.h"
++#include "components/tab_groups/tab_group_id.h"
++#include "chrome/browser/ui/tabs/contents_observing_tab_feature.h"
++#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
++#include "url/gurl.h"
++
++class TabStripModel;
++
++namespace content {
++class NavigationHandle;
++class WebContents;
++}
++
++namespace tabs {
++
++class TabInterface;
++
++// Sticky tab: remembers a home URL and a custom title. Pinned tabs are always
++// sticky. See ungoogled-chromium/docs/sticky-tabs.md.
++class StickyTabController : public ContentsObservingTabFeature {
++ public:
++  DECLARE_USER_DATA(StickyTabController);
++
++  static StickyTabController* From(TabInterface* tab);
++  static const StickyTabController* From(const TabInterface* tab);
++
++  // First index after pinned tabs and the run of sticky tabs following them.
++  static int IndexOfFirstNonStickyTab(const TabStripModel& model);
++
++  // Session persistence via the tab's session `extra_data`.
++  static void PopulateExtraData(const TabInterface* tab,
++                                std::map<std::string, std::string>* extra_data);
++  // Called on restore before the tab exists; picked up by the constructor.
++  static void StashExtraData(
++      content::WebContents* contents,
++      const std::map<std::string, std::string>& extra_data);
++
++  explicit StickyTabController(TabInterface* tab);
++  StickyTabController(const StickyTabController&) = delete;
++  StickyTabController& operator=(const StickyTabController&) = delete;
++  ~StickyTabController() override;
++
++  bool is_sticky() const { return sticky_; }
++  bool has_left_home() const { return left_home_; }
++  const std::u16string& title() const { return title_; }
++  const GURL& home_url() const { return home_url_; }
++
++  // Captures current URL + title as home state, marks the tab sticky.
++  // The tab is NOT moved; callers (group-join observer, pinned-state
++  // observer) ensure the tab is already where it should be.
++  void MakeStickyInPlace();
++  void RemoveSticky();
++  // Loads home URL and drops back/forward history.
++  void ResetToHome();
++  void SetHomeToCurrent();
++  void SetTitle(const std::u16string& title);
++  // Modal dialog with a text field; empty name falls back to the page title.
++  void ShowRenameDialog();
++  // Modal "Close sticky tab?" dialog; runs `on_confirm` on OK.
++  void ShowCloseConfirmDialog(base::OnceClosure on_confirm);
++  // Applies saved state without moving the tab (restore, startup).
++  void RestoreState(const GURL& home_url, const std::u16string& title);
++
++ private:
++  // content::WebContentsObserver:
++  void DidFinishNavigation(content::NavigationHandle* navigation) override;
++
++  void OnPinnedStateChanged(TabInterface* tab, bool pinned);
++  // STICKY_TABS: tab in any group is auto-sticky; leaving the group unsticks.
++  void OnGroupChanged(TabInterface* tab,
++                      std::optional<tab_groups::TabGroupId> new_group);
++  void SetLeftHome(bool left_home);
++  // Redraws the tab (title, attention dot) and refreshes menu state.
++  void NotifyChanged();
++  // Writes state to the session and, for pinned tabs, the pinned_tabs pref.
++  void Persist();
++
++  bool sticky_ = false;
++  bool left_home_ = false;
++  bool prune_history_on_commit_ = false;
++  std::u16string title_;
++  GURL home_url_;
++  base::CallbackListSubscription pinned_subscription_;
++  base::CallbackListSubscription group_subscription_;
++  ui::ScopedUnownedUserData<StickyTabController> scoped_data_holder_;
++  base::WeakPtrFactory<StickyTabController> weak_factory_{this};
++};
++
++}  // namespace tabs
++
++#endif  // CHROME_BROWSER_UI_TABS_STICKY_TAB_CONTROLLER_H_

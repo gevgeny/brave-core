@@ -1,0 +1,26 @@
+diff --git a/chrome/browser/ui/browser_live_tab_context.cc b/chrome/browser/ui/browser_live_tab_context.cc
+index d48ee3c659..c41a5bd647 100644
+--- a/chrome/browser/ui/browser_live_tab_context.cc
++++ b/chrome/browser/ui/browser_live_tab_context.cc
+@@ -41,6 +41,7 @@
+ #include "chrome/browser/ui/ui_features.h"
+ #include "chrome/browser/ui/window_metadata/window_metadata_controller.h"
+ #include "chrome/browser/web_applications/web_app_helpers.h"
++#include "chrome/browser/ui/tabs/sticky_tab_controller.h"  // STICKY_TABS
+ #include "components/saved_tab_groups/public/features.h"
+ #include "components/saved_tab_groups/public/saved_tab_group.h"
+ #include "components/saved_tab_groups/public/tab_group_sync_service.h"
+@@ -197,9 +198,13 @@ sessions::LiveTab* BrowserLiveTabContext::GetActiveLiveTab() const {
+ std::map<std::string, std::string> BrowserLiveTabContext::GetExtraDataForTab(
+     int index) const {
+   std::map<std::string, std::string> extra_data;
++  MaybePopulateTreeTabExtraData(*browser_, index, extra_data);
+ 
+   glic::PopulateGlicExtraData(tab_strip_model_->GetTabAtIndex(index),
+                               &extra_data);
++    // STICKY_TABS: include home URL + title for Cmd+Shift+T restore.
++  tabs::StickyTabController::PopulateExtraData(
++      tab_strip_model_->GetTabAtIndex(index), &extra_data);
+ 
+   return extra_data;
+ }

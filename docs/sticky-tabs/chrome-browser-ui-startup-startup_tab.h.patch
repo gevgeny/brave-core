@@ -1,0 +1,31 @@
+diff --git a/chrome/browser/ui/startup/startup_tab.h b/chrome/browser/ui/startup/startup_tab.h
+index 494d35877b..3d39935739 100644
+--- a/chrome/browser/ui/startup/startup_tab.h
++++ b/chrome/browser/ui/startup/startup_tab.h
+@@ -5,6 +5,7 @@
+ #ifndef CHROME_BROWSER_UI_STARTUP_STARTUP_TAB_H_
+ #define CHROME_BROWSER_UI_STARTUP_STARTUP_TAB_H_
+ 
++#include <string>
+ #include <vector>
+ 
+ #include "url/gurl.h"
+@@ -31,6 +32,18 @@ struct StartupTab {
+   // True if this tab was launched from an untrusted external custom protocol
+   // (e.g., google-chrome://) that was stripped on startup.
+   bool is_untrusted_launch = false;
++
++#if BUILDFLAG(ENABLE_CONTAINERS)
++  containers::ContainerSpecifier container;
++#endif
++
++  // STICKY_TABS pinned: custom title restored from the pinned_tabs pref.
++  std::u16string sticky_title;
++
++  StartupTab(const StartupTab&);
++  StartupTab& operator=(const StartupTab&);
++  StartupTab(StartupTab&&) noexcept;
++  StartupTab& operator=(StartupTab&&) noexcept;
+ };
+ 
+ using StartupTabs = std::vector<StartupTab>;

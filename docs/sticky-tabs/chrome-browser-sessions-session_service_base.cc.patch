@@ -1,0 +1,39 @@
+diff --git a/chrome/browser/sessions/session_service_base.cc b/chrome/browser/sessions/session_service_base.cc
+index ee887add6a..48f1dd1968 100644
+--- a/chrome/browser/sessions/session_service_base.cc
++++ b/chrome/browser/sessions/session_service_base.cc
+@@ -61,6 +61,9 @@
+ #include "content/public/browser/session_storage_namespace_handle.h"
+ #include "ui/base/mojom/window_show_state.mojom.h"
+ 
++#include "chrome/browser/ui/tabs/sticky_tab_controller.h"  // STICKY_TABS
++#include "components/tabs/public/tab_interface.h"
++
+ #if BUILDFLAG(IS_MAC)
+ #include "chrome/browser/app_controller_mac.h"
+ #endif
+@@ -675,6 +678,16 @@ void SessionServiceBase::BuildCommandsForTab(
+         sessions::CreatePinnedStateCommand(session_id, true));
+   }
+ 
++  // STICKY_TABS: tab extra_data is not otherwise carried across rebuilds.
++  std::map<std::string, std::string> sticky_data;
++    // STICKY_TABS: write home URL + title to extra_data for the tab.
++  tabs::StickyTabController::PopulateExtraData(
++      tabs::TabInterface::MaybeGetFromContents(tab), &sticky_data);
++  for (const auto& [key, value] : sticky_data) {
++    command_storage_manager()->AppendRebuildCommand(
++        sessions::CreateAddTabExtraDataCommand(session_id, key, value));
++  }
++
+   // Record the association between the sessionStorage namespace and the tab.
+   content::SessionStorageNamespaceHandle* session_storage_namespace =
+       tab->GetController().GetDefaultSessionStorageNamespace();
+@@ -686,6 +699,7 @@ void SessionServiceBase::BuildCommandsForBrowser(
+     BrowserWindowInterface* browser,
+     IdToRange* tab_to_available_range,
+     std::set<SessionID>* windows_to_track) {
++  BuildCommandsForTreeTab(browser->tab_strip_model(), command_storage_manager());
+   DCHECK(is_saving_enabled_);
+   DCHECK(browser);
+   DCHECK(browser->GetSessionID().is_valid());
